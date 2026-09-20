@@ -75,7 +75,7 @@ const PRIORITY: Record<string, number> = {
 type ProviderChoice = {
   id: string;
   supportsApiKey: boolean;
-  oauth?: { name: string };
+  oauth?: { name: string; storageId: string };
 };
 
 function prettyProviderName(providerId: string): string {
@@ -105,15 +105,18 @@ function openUrl(url: string): void {
   execCb(command, { windowsHide: true }, () => {});
 }
 
-function getOAuthProviderMap(): Map<string, { name: string }> {
+function getOAuthProviderMap(): Map<string, { name: string; storageId: string }> {
   return new Map(
     getOAuthProviders()
       .filter((provider) => provider.available !== false)
-      .map((provider) => [provider.id, { name: provider.name }]),
+      .map((provider) => [provider.id, {
+        name: provider.name,
+        storageId: provider.storeCredentialsAs ?? provider.id,
+      }]),
   );
 }
 
-function getProviderIds(ctx: any, oauthProviders: Map<string, { name: string }>): string[] {
+function getProviderIds(ctx: any, oauthProviders: Map<string, { name: string; storageId: string }>): string[] {
   const modelProviders = ctx.modelRegistry.getAll().map((model: { provider: string }) => model.provider);
   const discoverableProviders = typeof ctx.modelRegistry.getDiscoverableProviders === "function"
     ? ctx.modelRegistry.getDiscoverableProviders()
@@ -303,11 +306,17 @@ async function chooseProvider(ctx: any): Promise<void> {
       ? ctx.modelRegistry.getDiscoverableProviders()
       : [],
   );
+  const oauthStorageAliases = new Set(
+    [...oauthProviders.entries()]
+      .filter(([providerId, provider]) => provider.storageId !== providerId)
+      .map(([, provider]) => provider.storageId),
+  );
 
   const choices = providerIds
     .map((providerId): ProviderChoice => ({
       id: providerId,
       supportsApiKey: !OAUTH_ONLY_PROVIDERS.has(providerId)
+        && !oauthStorageAliases.has(providerId)
         && (modelProviderIds.has(providerId) || discoverableProviderIds.has(providerId) || providerId === "google" || providerId === "openrouter"),
       oauth: oauthProviders.get(providerId),
     }))
@@ -325,7 +334,8 @@ async function chooseProvider(ctx: any): Promise<void> {
       : provider.oauth
         ? "OAuth"
         : "API key";
-    const label = `${statusIcon(authStorage, provider.id)} ${prettyProviderName(provider.id)} [${provider.id}]`;
+    const storageId = provider.oauth?.storageId ?? provider.id;
+    const label = `${statusIcon(authStorage, storageId)} ${prettyProviderName(provider.id)} [${provider.id}]`;
     labels.set(label, provider);
     return { label, description: modes };
   });
@@ -394,9 +404,15 @@ export default function ompConnectExtension(omp: ExtensionAPI) {
 
       const oauthProviders = getOAuthProviderMap();
       const apiProviderIds = new Set(getProviderIds(ctx, oauthProviders).filter((id) => !OAUTH_ONLY_PROVIDERS.has(id)));
+      const oauthStorageAliases = new Set(
+        [...oauthProviders.entries()]
+          .filter(([oauthId, provider]) => provider.storageId !== oauthId)
+          .map(([, provider]) => provider.storageId),
+      );
       await chooseConnectionMethod({
         id: providerId,
-        supportsApiKey: apiProviderIds.has(providerId) || providerId === "google" || providerId === "openrouter",
+        supportsApiKey: !oauthStorageAliases.has(providerId)
+          && (apiProviderIds.has(providerId) || providerId === "google" || providerId === "openrouter"),
         oauth: oauthProviders.get(providerId),
       }, ctx);
     },
