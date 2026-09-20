@@ -78,6 +78,12 @@ type ProviderChoice = {
   oauth?: { name: string; storageId: string };
 };
 
+type ConnectionEntry = {
+  id: string;
+  kind: "oauth" | "api";
+  storageId: string;
+};
+
 function prettyProviderName(providerId: string): string {
   return DISPLAY_NAME_OVERRIDES[providerId]
     ?? providerId
@@ -118,14 +124,10 @@ function getOAuthProviderMap(): Map<string, { name: string; storageId: string }>
 
 function getProviderIds(ctx: any, oauthProviders: Map<string, { name: string; storageId: string }>): string[] {
   const modelProviders = ctx.modelRegistry.getAll().map((model: { provider: string }) => model.provider);
-  const discoverableProviders = typeof ctx.modelRegistry.getDiscoverableProviders === "function"
-    ? ctx.modelRegistry.getDiscoverableProviders()
-    : [];
   const savedProviders = ctx.modelRegistry.authStorage.list();
 
   return sortProviderIds([
     ...modelProviders,
-    ...discoverableProviders,
     ...savedProviders,
     ...oauthProviders.keys(),
   ]);
@@ -274,8 +276,8 @@ async function loginWithOAuth(providerId: string, ctx: any): Promise<void> {
 async function chooseConnectionMethod(provider: ProviderChoice, ctx: any): Promise<void> {
   if (provider.oauth && provider.supportsApiKey) {
     const method = await ctx.ui.select(`Connect ${prettyProviderName(provider.id)}`, [
-      { label: "API key", description: "Paste an existing key into OMP credentials" },
       { label: "OAuth", description: "Use OMP's native OAuth flow" },
+      { label: "API key", description: "Paste an existing key into OMP credentials" },
     ]);
 
     if (method === "OAuth") {
@@ -298,51 +300,60 @@ async function chooseProvider(ctx: any): Promise<void> {
   const authStorage = ctx.modelRegistry.authStorage;
   const oauthProviders = getOAuthProviderMap();
   const providerIds = getProviderIds(ctx, oauthProviders);
-  const modelProviderIds = new Set(
-    ctx.modelRegistry.getAll().map((model: { provider: string }) => model.provider),
-  );
-  const discoverableProviderIds = new Set(
-    typeof ctx.modelRegistry.getDiscoverableProviders === "function"
-      ? ctx.modelRegistry.getDiscoverableProviders()
-      : [],
-  );
   const oauthStorageAliases = new Set(
     [...oauthProviders.entries()]
       .filter(([providerId, provider]) => provider.storageId !== providerId)
       .map(([, provider]) => provider.storageId),
   );
 
-  const choices = providerIds
-    .map((providerId): ProviderChoice => ({
+  // Match pi-connect's original picker semantics: OAuth and API-key entries
+  // are separate rows, even when both methods belong to one provider.
+  const oauthEntries: ConnectionEntry[] = [...oauthProviders.entries()]
+    .filter(([providerId]) => providerIds.includes(providerId))
+    .map(([providerId, provider]) => ({
       id: providerId,
-      supportsApiKey: !OAUTH_ONLY_PROVIDERS.has(providerId)
-        && !oauthStorageAliases.has(providerId)
-        && (modelProviderIds.has(providerId) || discoverableProviderIds.has(providerId) || providerId === "google" || providerId === "openrouter"),
-      oauth: oauthProviders.get(providerId),
-    }))
-    .filter((provider) => provider.supportsApiKey || provider.oauth);
+      kind: "oauth",
+      storageId: provider.storageId,
+    }));
+  const apiEntries: ConnectionEntry[] = sortProviderIds(providerIds)
+    .filter((providerId) => !OAUTH_ONLY_PROVIDERS.has(providerId) && !oauthStorageAliases.has(providerId))
+    .map((providerId) => ({
+      id: providerId,
+      kind: "api",
+      storageId: providerId,
+    }));
+  const choices = [...oauthEntries, ...apiEntries];
 
   if (choices.length === 0) {
     ctx.ui.notify("OMP did not expose any providers", "warning");
     return;
   }
 
-  const labels = new Map<string, ProviderChoice>();
+  const labels = new Map<string, ConnectionEntry>();
   const options = choices.map((provider) => {
-    const modes = provider.oauth && provider.supportsApiKey
-      ? "API key or OAuth"
-      : provider.oauth
-        ? "OAuth"
-        : "API key";
-    const storageId = provider.oauth?.storageId ?? provider.id;
-    const label = `${statusIcon(authStorage, storageId)} ${prettyProviderName(provider.id)} [${provider.id}]`;
+    const oauth = oauthProviders.get(provider.id);
+    const displayName = provider.kind === "oauth" && oauth
+      ? oauth.name
+      : prettyProviderName(provider.id);
+    const mode = provider.kind === "oauth" ? "OAuth" : "API key";
+    const label = `${statusIcon(authStorage, provider.storageId)} ${displayName} [${provider.id}] — ${mode}`;
     labels.set(label, provider);
-    return { label, description: modes };
+    return {
+      label,
+      description: provider.kind === "oauth"
+        ? "Use OMP's native OAuth flow"
+        : "Paste and save an API key in OMP credentials",
+    };
   });
 
   const selected = await ctx.ui.select("Connect provider", options);
-  const provider = selected ? labels.get(selected) : undefined;
-  if (provider) await chooseConnectionMethod(provider, ctx);
+  const selectedEntry = selected ? labels.get(selected) : undefined;
+  if (!selectedEntry) return;
+  if (selectedEntry.kind === "oauth") {
+    await loginWithOAuth(selectedEntry.id, ctx);
+  } else {
+    await promptApiKey(selectedEntry.id, ctx);
+  }
 }
 
 async function disconnectCredential(ctx: any): Promise<void> {

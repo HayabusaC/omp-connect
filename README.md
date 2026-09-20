@@ -30,9 +30,9 @@ The manifest is the `omp` field in `package.json`; this is an OMP plugin, not a 
 /disconnect
 ```
 
-`/connect google` asks for a Gemini / AI Studio API key. `/connect openrouter` offers API key first and OAuth second, so an existing OpenRouter key can be pasted without being forced through OAuth.
+`/connect google` asks for a Gemini / AI Studio API key. The provider picker shows separate OAuth and API-key rows for providers that support both, including OpenRouter, so an existing OpenRouter key can be pasted without being forced through OAuth.
 
-For providers that support both methods, the picker lets you choose API key or OAuth. OAuth is delegated to OMP's `AuthStorage.login`; this extension does not implement an OAuth protocol or token exchange.
+For a direct command such as `/connect openrouter`, the extension preserves the pi-connect method chooser. OAuth is delegated to OMP's `AuthStorage.login`; this extension does not implement an OAuth protocol or token exchange.
 
 ## Credential storage
 
