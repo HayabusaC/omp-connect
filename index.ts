@@ -1,6 +1,6 @@
-import { DynamicBorder, type ExtensionAPI } from "@mariozechner/pi-coding-agent";
-import { getEnvApiKey } from "@mariozechner/pi-ai";
-import { Container, fuzzyFilter, Input, Key, matchesKey, SelectList, Text, type SelectItem } from "@mariozechner/pi-tui";
+import { getOAuthProviders, type OAuthPrompt } from "@oh-my-pi/pi-ai/oauth";
+import type { ExtensionAPI } from "@oh-my-pi/pi-coding-agent";
+import { Container, Input, Text } from "@oh-my-pi/pi-tui";
 import { exec as execCb } from "node:child_process";
 
 const DISPLAY_NAME_OVERRIDES: Record<string, string> = {
@@ -22,11 +22,11 @@ const DISPLAY_NAME_OVERRIDES: Record<string, string> = {
   "azure-openai-responses": "Azure OpenAI",
   "vercel-ai-gateway": "Vercel AI Gateway",
   "openai-codex": "ChatGPT",
-  "github-copilot": "Copilot",
+  "github-copilot": "GitHub Copilot",
   "google-gemini-cli": "Gemini CLI",
   "google-antigravity": "Antigravity",
   "google-vertex": "Google Vertex",
-  "amazon-bedrock": "Amazon Bedrock"
+  "amazon-bedrock": "Amazon Bedrock",
 };
 
 const ENV_VAR_OVERRIDES: Record<string, string> = {
@@ -46,14 +46,16 @@ const ENV_VAR_OVERRIDES: Record<string, string> = {
   minimax: "MINIMAX_API_KEY",
   "minimax-cn": "MINIMAX_CN_API_KEY",
   "azure-openai-responses": "AZURE_OPENAI_API_KEY",
-  "vercel-ai-gateway": "AI_GATEWAY_API_KEY"
+  "vercel-ai-gateway": "AI_GATEWAY_API_KEY",
 };
 
+// These providers intentionally remain OAuth-only. OMP's native provider
+// definitions are the authority for which OAuth providers exist.
 const OAUTH_ONLY_PROVIDERS = new Set([
   "openai-codex",
   "github-copilot",
   "google-gemini-cli",
-  "google-antigravity"
+  "google-antigravity",
 ]);
 
 const PRIORITY: Record<string, number> = {
@@ -67,7 +69,13 @@ const PRIORITY: Record<string, number> = {
   opencode: 7,
   "opencode-go": 8,
   groq: 9,
-  mistral: 10
+  mistral: 10,
+};
+
+type ProviderChoice = {
+  id: string;
+  supportsApiKey: boolean;
+  oauth?: { name: string };
 };
 
 function prettyProviderName(providerId: string): string {
@@ -78,219 +86,305 @@ function prettyProviderName(providerId: string): string {
       .join(" ");
 }
 
+function sortProviderIds(providerIds: Iterable<string>): string[] {
+  return [...new Set(providerIds)].sort((a, b) => {
+    return (PRIORITY[a] ?? 99) - (PRIORITY[b] ?? 99)
+      || prettyProviderName(a).localeCompare(prettyProviderName(b));
+  });
+}
+
 function openUrl(url: string): void {
   const command = process.platform === "darwin"
     ? `open ${JSON.stringify(url)}`
     : process.platform === "win32"
       ? `start "" ${JSON.stringify(url)}`
       : `xdg-open ${JSON.stringify(url)}`;
-  execCb(command, () => {});
+
+  // OAuth was explicitly selected by the user before this is called. The
+  // callback never writes the URL or any credential material to output.
+  execCb(command, { windowsHide: true }, () => {});
 }
 
-function sortProviderIds(providerIds: string[]): string[] {
-  return [...providerIds].sort((a, b) => {
-    return (PRIORITY[a] ?? 99) - (PRIORITY[b] ?? 99)
-      || prettyProviderName(a).localeCompare(prettyProviderName(b));
-  });
-}
-
-function getRuntimeProviderIds(ctx: any): string[] {
-  const fromModels = ctx.modelRegistry.getAll().map((model: any) => model.provider);
-  const fromSavedAuth = ctx.modelRegistry.authStorage.list();
-  const fromOauth = ctx.modelRegistry.authStorage.getOAuthProviders().map((provider: any) => provider.id);
-  return [...new Set([...fromModels, ...fromSavedAuth, ...fromOauth])];
-}
-
-function getApiCapableProviderIds(ctx: any): string[] {
-  return sortProviderIds(
-    getRuntimeProviderIds(ctx).filter((providerId) => !OAUTH_ONLY_PROVIDERS.has(providerId))
+function getOAuthProviderMap(): Map<string, { name: string }> {
+  return new Map(
+    getOAuthProviders()
+      .filter((provider) => provider.available !== false)
+      .map((provider) => [provider.id, { name: provider.name }]),
   );
 }
 
-async function pickItem(ctx: any, title: string, subtitle: string | undefined, items: SelectItem[]): Promise<SelectItem | null> {
-  return ctx.ui.custom<SelectItem | null>((tui, theme, _kb, done) => {
-    const container = new Container();
-    container.addChild(new DynamicBorder((s: string) => theme.fg("accent", s)));
-    container.addChild(new Text(theme.fg("text", theme.bold(title)), 1, 0));
-    if (subtitle) container.addChild(new Text(theme.fg("dim", subtitle), 1, 0));
+function getProviderIds(ctx: any, oauthProviders: Map<string, { name: string }>): string[] {
+  const modelProviders = ctx.modelRegistry.getAll().map((model: { provider: string }) => model.provider);
+  const discoverableProviders = typeof ctx.modelRegistry.getDiscoverableProviders === "function"
+    ? ctx.modelRegistry.getDiscoverableProviders()
+    : [];
+  const savedProviders = ctx.modelRegistry.authStorage.list();
 
-    container.addChild(new Text(theme.fg("muted", "Search"), 1, 0));
-    const searchInput = new Input();
-    searchInput.focused = true;
-    container.addChild(searchInput);
-    container.addChild(new Text("", 0, 0));
-
-    const maxVisible = Math.max(6, Math.min(items.length, Math.floor((tui.terminal.rows - 14) / 2)));
-    const listContainer = new Container();
-    container.addChild(listContainer);
-
-    let list: SelectList;
-
-    const sectionOauth = items.find((item) => item.value === "__section_oauth");
-    const sectionApi = items.find((item) => item.value === "__section_api");
-    const itemTheme = {
-      selectedPrefix: (t: string) => theme.fg("accent", t),
-      selectedText: (t: string) => theme.fg("accent", theme.bold(t)),
-      description: (t: string) => theme.fg("muted", t),
-      scrollInfo: (t: string) => theme.fg("dim", t),
-      noMatch: (t: string) => theme.fg("warning", t),
-    };
-
-    const rebuildList = () => {
-      const query = searchInput.getValue().trim();
-      const normalItems = items.filter((item) => !item.value.startsWith("__section_"));
-      const filtered = query
-        ? fuzzyFilter(normalItems, query, (item) => `${item.label} ${item.description ?? ""}`)
-        : normalItems;
-
-      const oauthItems = filtered.filter((item) => item.value.startsWith("oauth:"));
-      const apiItems = filtered.filter((item) => item.value.startsWith("api:"));
-
-      const displayItems: SelectItem[] = [];
-      if (oauthItems.length > 0 && sectionOauth) displayItems.push(sectionOauth);
-      displayItems.push(...oauthItems);
-      if (apiItems.length > 0 && sectionApi) displayItems.push(sectionApi);
-      displayItems.push(...apiItems);
-
-      const finalItems = displayItems.length > 0
-        ? displayItems
-        : [{ value: "__empty", label: "No matching providers", description: "Try a different search" }];
-
-      list = new SelectList(finalItems, maxVisible, itemTheme);
-      list.onSelect = (item) => {
-        if (item.value.startsWith("__section_") || item.value === "__empty") return;
-        done(item);
-      };
-      list.onCancel = () => done(null);
-
-      listContainer.clear();
-      listContainer.addChild(list);
-    };
-
-    rebuildList();
-
-    container.addChild(new Text("", 0, 0));
-    container.addChild(new Text(`${theme.fg("success", "●")} connected   ${theme.fg("warning", "◌")} env   ${theme.fg("muted", "○")} new`, 1, 0));
-    container.addChild(new Text(theme.fg("dim", "type to search  •  ↑↓ navigate  •  Enter select  •  Esc cancel/clear"), 1, 0));
-    container.addChild(new DynamicBorder((s: string) => theme.fg("accent", s)));
-
-    return {
-      render: (w) => container.render(w),
-      invalidate: () => container.invalidate(),
-      handleInput: (data) => {
-        if (matchesKey(data, Key.escape)) {
-          if (searchInput.getValue()) {
-            searchInput.setValue("");
-            rebuildList();
-            tui.requestRender();
-            return;
-          }
-          done(null);
-          return;
-        }
-
-        if (matchesKey(data, Key.up) || matchesKey(data, Key.down) || matchesKey(data, Key.enter) || matchesKey(data, Key.return) || matchesKey(data, Key.pageUp) || matchesKey(data, Key.pageDown)) {
-          list.handleInput(data);
-          tui.requestRender();
-          return;
-        }
-
-        searchInput.handleInput(data);
-        rebuildList();
-        tui.requestRender();
-      },
-    };
-  });
+  return sortProviderIds([
+    ...modelProviders,
+    ...discoverableProviders,
+    ...savedProviders,
+    ...oauthProviders.keys(),
+  ]);
 }
 
-export default function piConnectExtension(pi: ExtensionAPI) {
-  async function chooseProvider(ctx: any) {
-    const authStorage = ctx.modelRegistry.authStorage;
-    const oauthProviders = authStorage.getOAuthProviders();
-    const apiProviderIds = getApiCapableProviderIds(ctx);
+function getStoredCredentialCount(authStorage: any, providerId: string): number {
+  if (typeof authStorage.listStoredCredentials === "function") {
+    return authStorage.listStoredCredentials(providerId).length;
+  }
+  return authStorage.has(providerId) ? 1 : 0;
+}
 
-    const statusIcon = (providerId: string) => {
-      if (authStorage.has(providerId)) return "●";
-      if (getEnvApiKey(providerId)) return "◌";
-      return "○";
+function hasConfiguredAuth(authStorage: any, providerId: string): boolean {
+  if (typeof authStorage.hasAuth === "function") return authStorage.hasAuth(providerId);
+  return authStorage.has(providerId);
+}
+
+function statusIcon(authStorage: any, providerId: string): string {
+  if (getStoredCredentialCount(authStorage, providerId) > 0) return "●";
+  if (hasConfiguredAuth(authStorage, providerId)) return "◌";
+  return "○";
+}
+
+async function promptInput(
+  ctx: any,
+  title: string,
+  placeholder: string,
+  secret: boolean,
+  signal?: AbortSignal,
+): Promise<string | undefined> {
+  if (ctx.hasUI === false) {
+    return ctx.ui.input(title, placeholder, signal ? { signal } : undefined);
+  }
+
+  return ctx.ui.custom<string | undefined>((tui: any, _theme: any, _keybindings: any, done: (value: string | undefined) => void) => {
+    const container = new Container();
+    container.addChild(new Text(title, 0, 0));
+    if (placeholder) container.addChild(new Text(placeholder, 0, 0));
+
+    const input = new Input();
+    input.prompt = "› ";
+    input.mask = secret;
+    input.focused = true;
+    container.addChild(input);
+
+    let settled = false;
+    let abortHandler: (() => void) | undefined;
+
+    const cleanup = () => {
+      if (abortHandler && signal) signal.removeEventListener("abort", abortHandler);
+      input.onSubmit = undefined;
+      input.onEscape = undefined;
     };
 
-    const items: SelectItem[] = [];
+    const finish = (value: string | undefined) => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      done(value);
+    };
 
-    if (oauthProviders.length > 0) {
-      items.push({
-        value: "__section_oauth",
-        label: "OAuth providers",
-        description: "login via browser"
-      });
-      for (const provider of oauthProviders) {
-        items.push({
-          value: `oauth:${provider.id}`,
-          label: `${statusIcon(provider.id)} ${provider.name}`,
-          description: "OAuth"
-        });
-      }
+    abortHandler = () => finish(undefined);
+    input.onSubmit = (value: string) => finish(value);
+    input.onEscape = () => finish(undefined);
+
+    if (signal?.aborted) {
+      queueMicrotask(() => finish(undefined));
+    } else {
+      signal?.addEventListener("abort", abortHandler, { once: true });
     }
 
-    if (apiProviderIds.length > 0) {
-      items.push({
-        value: "__section_api",
-        label: "API key providers",
-        description: "paste and save key"
-      });
-      for (const providerId of apiProviderIds) {
-        items.push({
-          value: `api:${providerId}`,
-          label: `${statusIcon(providerId)} ${prettyProviderName(providerId)}`,
-          description: ENV_VAR_OVERRIDES[providerId] ?? "API key"
-        });
-      }
-    }
-
-    const selected = await pickItem(ctx, "Connect provider", "Unified OAuth and API key login", items);
-    if (!selected || selected.value.startsWith("__section_")) return;
-
-    const [kind, providerId] = selected.value.split(":", 2);
-    if (!providerId) return;
-
-    if (kind === "oauth") {
-      await loginWithOAuth(providerId, ctx);
-      return;
-    }
-
-    await promptApiKey(providerId, ctx);
-  }
-
-  async function promptApiKey(providerId: string, ctx: any) {
-    const authStorage = ctx.modelRegistry.authStorage;
-    const prompt = ENV_VAR_OVERRIDES[providerId]
-      ? `${prettyProviderName(providerId)} API key (${ENV_VAR_OVERRIDES[providerId]})`
-      : `${prettyProviderName(providerId)} API key`;
-    const value = await ctx.ui.input(prompt, "Paste API key");
-    if (!value) {
-      ctx.ui.notify("Cancelled", "info");
-      return;
-    }
-    authStorage.set(providerId, { type: "api_key", key: value.trim() });
-    ctx.ui.notify(`Saved ${prettyProviderName(providerId)}`, "info");
-  }
-
-  async function loginWithOAuth(providerId: string, ctx: any) {
-    const authStorage = ctx.modelRegistry.authStorage;
-    await authStorage.login(providerId, {
-      onAuth: ({ url, instructions }) => {
-        openUrl(url);
-        ctx.ui.notify(instructions ? `${instructions}\n${url}` : url, "info");
+    return {
+      render: (width: number) => container.render(width),
+      invalidate: () => container.invalidate(),
+      handleInput: (data: string) => {
+        input.handleInput(data);
+        tui.requestRender();
       },
-      onPrompt: async ({ message, placeholder }) => (await ctx.ui.input(message, placeholder)) ?? "",
-      onManualCodeInput: async () => (await ctx.ui.input("Paste the callback URL or code", "code or redirect URL")) ?? "",
-      onProgress: (message) => ctx.ui.notify(message, "info"),
-    });
-    ctx.ui.notify(`Connected ${prettyProviderName(providerId)}`, "info");
+      dispose: cleanup,
+    };
+  }, signal ? { signal } : undefined);
+}
+
+async function promptApiKey(providerId: string, ctx: any): Promise<void> {
+  const authStorage = ctx.modelRegistry.authStorage;
+  const envName = ENV_VAR_OVERRIDES[providerId];
+  const prompt = envName
+    ? `${prettyProviderName(providerId)} API key (stored in OMP credentials; ${envName} is not required)`
+    : `${prettyProviderName(providerId)} API key (stored in OMP credentials)`;
+  const value = await promptInput(ctx, prompt, "Paste API key", true);
+  const key = value?.trim();
+
+  if (!key) {
+    ctx.ui.notify("Cancelled", "info");
+    return;
   }
 
-  pi.registerCommand("connect", {
-    description: "Connect any OAuth or API key provider from one unified UI",
+  // upsertCredential appends a distinct API key and updates an identical key.
+  // AuthStorage.set() has replace-all semantics and is intentionally avoided.
+  await authStorage.upsertCredential(providerId, {
+    type: "api_key",
+    key,
+    source: "login",
+  });
+  ctx.ui.notify(`Saved ${prettyProviderName(providerId)} in OMP credentials`, "info");
+}
+
+async function loginWithOAuth(providerId: string, ctx: any): Promise<void> {
+  const authStorage = ctx.modelRegistry.authStorage;
+
+  try {
+    const identity = await authStorage.login(providerId, {
+      onAuth: ({ url, launchUrl }: { url: string; launchUrl?: string }) => {
+        openUrl(launchUrl ?? url);
+        ctx.ui.notify("OAuth login opened in your browser", "info");
+      },
+      onPrompt: (prompt: OAuthPrompt) => promptInput(
+        ctx,
+        prompt.message,
+        prompt.placeholder ?? "",
+        prompt.secret === true,
+      ).then((value) => value ?? ""),
+      onManualCodeInput: (signal?: AbortSignal) => promptInput(
+        ctx,
+        "Paste the authorization code or redirect URL",
+        "code or redirect URL",
+        false,
+        signal,
+      ).then((value) => value ?? ""),
+      onProgress: () => {
+        ctx.ui.notify("OAuth login in progress…", "info");
+      },
+    });
+
+    ctx.ui.notify(
+      identity ? `Connected ${prettyProviderName(providerId)}` : "OAuth login cancelled",
+      "info",
+    );
+  } catch {
+    // Do not surface error objects: providers may include URLs or credential
+    // material in their messages. OMP diagnostics remain available separately.
+    ctx.ui.notify("OAuth login failed; see OMP diagnostics for details", "error");
+  }
+}
+
+async function chooseConnectionMethod(provider: ProviderChoice, ctx: any): Promise<void> {
+  if (provider.oauth && provider.supportsApiKey) {
+    const method = await ctx.ui.select(`Connect ${prettyProviderName(provider.id)}`, [
+      { label: "API key", description: "Paste an existing key into OMP credentials" },
+      { label: "OAuth", description: "Use OMP's native OAuth flow" },
+    ]);
+
+    if (method === "OAuth") {
+      await loginWithOAuth(provider.id, ctx);
+    } else if (method === "API key") {
+      await promptApiKey(provider.id, ctx);
+    }
+    return;
+  }
+
+  if (provider.oauth) {
+    await loginWithOAuth(provider.id, ctx);
+    return;
+  }
+
+  await promptApiKey(provider.id, ctx);
+}
+
+async function chooseProvider(ctx: any): Promise<void> {
+  const authStorage = ctx.modelRegistry.authStorage;
+  const oauthProviders = getOAuthProviderMap();
+  const providerIds = getProviderIds(ctx, oauthProviders);
+  const modelProviderIds = new Set(
+    ctx.modelRegistry.getAll().map((model: { provider: string }) => model.provider),
+  );
+  const discoverableProviderIds = new Set(
+    typeof ctx.modelRegistry.getDiscoverableProviders === "function"
+      ? ctx.modelRegistry.getDiscoverableProviders()
+      : [],
+  );
+
+  const choices = providerIds
+    .map((providerId): ProviderChoice => ({
+      id: providerId,
+      supportsApiKey: !OAUTH_ONLY_PROVIDERS.has(providerId)
+        && (modelProviderIds.has(providerId) || discoverableProviderIds.has(providerId) || providerId === "google" || providerId === "openrouter"),
+      oauth: oauthProviders.get(providerId),
+    }))
+    .filter((provider) => provider.supportsApiKey || provider.oauth);
+
+  if (choices.length === 0) {
+    ctx.ui.notify("OMP did not expose any providers", "warning");
+    return;
+  }
+
+  const labels = new Map<string, ProviderChoice>();
+  const options = choices.map((provider) => {
+    const modes = provider.oauth && provider.supportsApiKey
+      ? "API key or OAuth"
+      : provider.oauth
+        ? "OAuth"
+        : "API key";
+    const label = `${statusIcon(authStorage, provider.id)} ${prettyProviderName(provider.id)} [${provider.id}]`;
+    labels.set(label, provider);
+    return { label, description: modes };
+  });
+
+  const selected = await ctx.ui.select("Connect provider", options);
+  const provider = selected ? labels.get(selected) : undefined;
+  if (provider) await chooseConnectionMethod(provider, ctx);
+}
+
+async function disconnectCredential(ctx: any): Promise<void> {
+  const authStorage = ctx.modelRegistry.authStorage;
+  const providers = sortProviderIds(authStorage.list());
+
+  if (providers.length === 0) {
+    ctx.ui.notify("No saved credentials", "info");
+    return;
+  }
+
+  const providerLabels = new Map<string, string>();
+  const providerOptions = providers.map((providerId) => {
+    const label = `${statusIcon(authStorage, providerId)} ${prettyProviderName(providerId)} [${providerId}]`;
+    providerLabels.set(label, providerId);
+    return { label, description: `${getStoredCredentialCount(authStorage, providerId)} saved credential(s)` };
+  });
+  const selectedProviderLabel = await ctx.ui.select("Disconnect provider", providerOptions);
+  const providerId = selectedProviderLabel ? providerLabels.get(selectedProviderLabel) : undefined;
+  if (!providerId) return;
+
+  if (typeof authStorage.listStoredCredentials !== "function" || typeof authStorage.removeCredential !== "function") {
+    ctx.ui.notify("This OMP version does not expose per-credential removal; nothing was changed", "warning");
+    return;
+  }
+
+  const credentials = authStorage.listStoredCredentials(providerId);
+  if (credentials.length === 0) {
+    ctx.ui.notify("No stored credential was found for that provider", "info");
+    return;
+  }
+
+  const credentialLabels = new Map<string, string>();
+  const credentialOptions = credentials.map((entry: any, index: number) => {
+    const credential = entry.credential;
+    const label = credential?.type === "oauth"
+      ? `OAuth account ${index + 1}${credential.email ? ` (${credential.email})` : ""}`
+      : `API key ${index + 1}`;
+    credentialLabels.set(label, entry.id);
+    return { label, description: "Remove only this OMP credential" };
+  });
+  const selectedCredentialLabel = await ctx.ui.select("Choose credential to remove", credentialOptions);
+  const credentialId = selectedCredentialLabel ? credentialLabels.get(selectedCredentialLabel) : undefined;
+  if (!credentialId) return;
+
+  const removed = await authStorage.removeCredential(providerId, credentialId);
+  ctx.ui.notify(removed ? "Credential removed from OMP credentials" : "Credential was not found", removed ? "info" : "warning");
+}
+
+export default function ompConnectExtension(omp: ExtensionAPI) {
+  omp.registerCommand("connect", {
+    description: "Connect an OMP OAuth or API key provider",
     handler: async (args, ctx) => {
       const providerId = args.trim().toLowerCase();
       if (!providerId) {
@@ -298,51 +392,20 @@ export default function piConnectExtension(pi: ExtensionAPI) {
         return;
       }
 
-      const oauthIds = new Set(ctx.modelRegistry.authStorage.getOAuthProviders().map((provider: any) => provider.id));
-      const apiIds = new Set(getApiCapableProviderIds(ctx));
-
-      if (oauthIds.has(providerId) && apiIds.has(providerId)) {
-        const method = await pickItem(ctx, prettyProviderName(providerId), "Choose how to connect", [
-          { value: "oauth", label: "OAuth", description: "browser login" },
-          { value: "api", label: "API key", description: "paste and save key" },
-        ]);
-        if (!method) return;
-        if (method.value === "oauth") {
-          await loginWithOAuth(providerId, ctx);
-          return;
-        }
-        await promptApiKey(providerId, ctx);
-        return;
-      }
-
-      if (oauthIds.has(providerId)) {
-        await loginWithOAuth(providerId, ctx);
-        return;
-      }
-
-      await promptApiKey(providerId, ctx);
+      const oauthProviders = getOAuthProviderMap();
+      const apiProviderIds = new Set(getProviderIds(ctx, oauthProviders).filter((id) => !OAUTH_ONLY_PROVIDERS.has(id)));
+      await chooseConnectionMethod({
+        id: providerId,
+        supportsApiKey: apiProviderIds.has(providerId) || providerId === "google" || providerId === "openrouter",
+        oauth: oauthProviders.get(providerId),
+      }, ctx);
     },
   });
 
-  pi.registerCommand("disconnect", {
-    description: "Remove a saved provider credential",
+  omp.registerCommand("disconnect", {
+    description: "Remove one saved OMP credential",
     handler: async (_args, ctx) => {
-      const authStorage = ctx.modelRegistry.authStorage;
-      const providers = sortProviderIds(authStorage.list());
-      if (providers.length === 0) {
-        ctx.ui.notify("No saved credentials", "info");
-        return;
-      }
-      const items: SelectItem[] = providers.map((providerId) => ({
-        value: providerId,
-        label: `● ${prettyProviderName(providerId)}`,
-        description: "Connected"
-      }));
-      const selected = await pickItem(ctx, "Disconnect provider", "Remove a saved credential", items);
-      const selectedProviderId = selected?.value;
-      if (!selectedProviderId) return;
-      authStorage.remove(selectedProviderId);
-      ctx.ui.notify(`Removed ${prettyProviderName(selectedProviderId)}`, "info");
+      await disconnectCredential(ctx);
     },
   });
 }

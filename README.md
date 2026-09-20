@@ -1,96 +1,56 @@
-# pi-connect
+# omp-connect
 
-![pi-connect screenshot](https://raw.githubusercontent.com/hk-vk/pi-connect/main/assets/screenshot.png?v=202603281825)
+Unified OAuth and API-key login for [Oh My Pi](https://github.com/can1357/oh-my-pi) / OMP.
 
-Unified OAuth and API key login for pi with an OpenCode-inspired UI.
+`omp-connect` keeps the core `pi-connect` workflow while using the current OMP APIs:
 
-Connect 15+ providers with one `/connect` command.
+- `/connect` with provider selection
+- API-key paste for Google Gemini, OpenRouter, and other registered providers
+- OMP-native OAuth for providers that expose an OAuth login
+- `/disconnect` with per-credential removal
 
-Official pi providers list:
-- https://github.com/badlogic/pi-mono/blob/main/packages/coding-agent/docs/providers.md
+## Install for development
 
-## Install
+From this repository:
 
 ```bash
-pi install git:github.com/hk-vk/pi-connect
+omp plugin link .
+omp plugin list --json
+omp plugin doctor --json
 ```
+
+The manifest is the `omp` field in `package.json`; this is an OMP plugin, not a legacy `pi` package.
 
 ## Usage
 
-### `/connect` — connect any provider
-
-**OAuth** (browser login) or **API key** (paste your key) — one unified UI for all providers supported by pi.
-
-```bash
-/connect
-```
-
-Opens a picker like this:
-
 ```text
-╭───────────────────────────────────╮
-│ Connect provider                  │
-│                                   │
-│ ○ Anthropic     OAuth             │
-│ ○ ChatGPT       OAuth             │
-│ ○ Copilot       OAuth             │
-│ ○ OpenAI        API key           │
-│ ○ OpenRouter    API key           │
-│ ○ OpenCode      API key           │
-│ ○ Gemini        API key           │
-│ ○ Groq          API key           │
-│                                   │
-│ ● connected  ◌ env  ○ new        │
-╰───────────────────────────────────╯
-```
-
-Status:
-- `● connected` = saved in `auth.json`
-- `◌ env` = available from environment variable
-- `○ new` = not configured yet
-
-### Direct connect
-
-```bash
-/connect openai
-/connect anthropic
+/connect
+/connect google
 /connect openrouter
-```
-
-### `/disconnect` — remove a saved credential
-
-```bash
 /disconnect
 ```
 
-## Supported — 15+ providers
+`/connect google` asks for a Gemini / AI Studio API key. `/connect openrouter` offers API key first and OAuth second, so an existing OpenRouter key can be pasted without being forced through OAuth.
 
-**OAuth:**
-- Anthropic (Claude Pro/Max)
-- ChatGPT Plus/Pro (Codex)
-- GitHub Copilot
-- Google Gemini CLI
-- Google Antigravity
+For providers that support both methods, the picker lets you choose API key or OAuth. OAuth is delegated to OMP's `AuthStorage.login`; this extension does not implement an OAuth protocol or token exchange.
 
-**API key:**
-- Anthropic
-- OpenAI
-- OpenCode
-- OpenRouter
-- Google Gemini
-- Groq
-- Mistral
-- Cerebras
-- xAI
-- ZAI
-- Azure OpenAI
-- Vercel AI Gateway
-- Hugging Face
-- Kimi
-- MiniMax
+## Credential storage
 
-See the official pi provider documentation for the full list and auth details:
-- https://github.com/badlogic/pi-mono/blob/main/packages/coding-agent/docs/providers.md
+Pasted keys are saved with OMP's public `AuthStorage.upsertCredential` API. They are not written to `.env`, `models.yml`, `keys.json`, or a plugin-owned credential file. Existing provider/model IDs are preserved, including `google/...` and `openrouter/...`.
+
+OMP v18.2.6 supports multiple credentials per provider. `upsertCredential` appends a different key and updates an identical key, while `/disconnect` removes only the selected credential. The extension deliberately does not use `AuthStorage.set`, whose replace-all behavior could silently discard older keys.
+
+The extension never prints API keys, OAuth tokens, credential objects, or provider error objects to logs or test output.
+
+## Development notes
+
+The package targets the OMP v18.2.6 public package names:
+
+- `@oh-my-pi/pi-coding-agent`
+- `@oh-my-pi/pi-ai`
+- `@oh-my-pi/pi-tui`
+
+It reads the OAuth provider registry through `getOAuthProviders()` and persists credentials through the current OMP `AuthStorage` surface.
 
 ## License
 

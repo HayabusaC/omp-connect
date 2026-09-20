@@ -1,13 +1,13 @@
 {
-  "name": "pi-connect",
-  "version": "0.1.3",
-  "description": "Unified OAuth and API key login for pi with an OpenCode-inspired UI. Connect 15+ providers with one /connect command.",
+  "name": "omp-connect",
+  "version": "0.2.0",
+  "description": "Unified OAuth and API key login for Oh My Pi / OMP.",
   "type": "module",
   "license": "MIT",
   "keywords": [
-    "pi-package",
-    "pi-extension",
-    "pi",
+    "omp-plugin",
+    "omp-extension",
+    "omp",
     "oauth",
     "api-key",
     "provider-login",
@@ -15,14 +15,14 @@
   ],
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/hk-vk/pi-connect.git"
+    "url": "git+https://github.com/HayabusaC/omp-connect.git"
   },
-  "homepage": "https://github.com/hk-vk/pi-connect#readme",
+  "homepage": "https://github.com/HayabusaC/omp-connect#readme",
   "bugs": {
-    "url": "https://github.com/hk-vk/pi-connect/issues"
+    "url": "https://github.com/HayabusaC/omp-connect/issues"
   },
   "engines": {
-    "node": ">=18.0.0"
+    "bun": ">=1.3.14"
   },
   "files": [
     "index.ts",
@@ -33,15 +33,15 @@
   "publishConfig": {
     "access": "public"
   },
-  "pi": {
+  "omp": {
     "extensions": [
       "./index.ts"
     ],
-    "image": "https://raw.githubusercontent.com/hk-vk/pi-connect/main/assets/screenshot.png"
+    "image": "https://raw.githubusercontent.com/HayabusaC/omp-connect/main/assets/screenshot.png"
   },
   "peerDependencies": {
-    "@mariozechner/pi-coding-agent": "*",
-    "@mariozechner/pi-ai": "*",
-    "@mariozechner/pi-tui": "*"
+    "@oh-my-pi/pi-coding-agent": "^18.2.6",
+    "@oh-my-pi/pi-ai": "^18.2.6",
+    "@oh-my-pi/pi-tui": "^18.2.6"
   }
 }
