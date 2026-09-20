@@ -1,6 +1,6 @@
 {
   "name": "omp-connect",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "Unified OAuth and API key login for Oh My Pi / OMP.",
   "type": "module",
   "license": "MIT",
@@ -43,5 +43,16 @@
     "@oh-my-pi/pi-coding-agent": "^18.2.6",
     "@oh-my-pi/pi-ai": "^18.2.6",
     "@oh-my-pi/pi-tui": "^18.2.6"
+  },
+  "peerDependenciesMeta": {
+    "@oh-my-pi/pi-coding-agent": {
+      "optional": true
+    },
+    "@oh-my-pi/pi-ai": {
+      "optional": true
+    },
+    "@oh-my-pi/pi-tui": {
+      "optional": true
+    }
   }
 }

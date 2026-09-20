@@ -1,0 +1,20 @@
+{
+  "lockfileVersion": 2,
+  "configVersion": 1,
+  "workspaces": {
+    "": {
+      "name": "omp-connect",
+      "peerDependencies": {
+        "@oh-my-pi/pi-ai": "^18.2.6",
+        "@oh-my-pi/pi-coding-agent": "^18.2.6",
+        "@oh-my-pi/pi-tui": "^18.2.6",
+      },
+      "optionalPeers": [
+        "@oh-my-pi/pi-ai",
+        "@oh-my-pi/pi-coding-agent",
+        "@oh-my-pi/pi-tui",
+      ],
+    },
+  },
+  "packages": {}
+}

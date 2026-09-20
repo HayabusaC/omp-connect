@@ -1,4 +1,5 @@
-import { getOAuthProviders, type OAuthPrompt } from "@oh-my-pi/pi-ai/oauth";
+import { getOAuthProviders } from "@oh-my-pi/pi-ai/oauth";
+import type { OAuthPrompt } from "@oh-my-pi/pi-ai/oauth";
 import type { ExtensionAPI } from "@oh-my-pi/pi-coding-agent";
 import { Container, Input, Text } from "@oh-my-pi/pi-tui";
 import { exec as execCb } from "node:child_process";
